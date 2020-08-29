@@ -28,7 +28,7 @@ def dydt(y, mass, dim, dt, use_G=False):
     deriv[0:len(deriv) - 1:2] = veloc  # Velocity at previous time-step corresponds to distance at current time-step.
     deriv_index = np.arange(1, len(mass) * 2, 2)
 
-    mult = np.dot(r_matrix, mass)  # Via N2, we calculate the change in velocity (F/m = p/m = v).
+    mult = np.dot(r_matrix, mass)  # Via N2, we calculate the change in velocity (F*dt/m = p/m = v).
     for i, item in enumerate(mult):
         deriv[deriv_index[i]] += mult[i]
 
