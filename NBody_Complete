@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Dec 11 11:36:55 2019
+
+@author: christian
+"""
+
+import numpy as np
+import math
+import time
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import matplotlib
+from NBody_dydt import dydt
+from figure_handle import axis_handle
+
+matplotlib.use('Agg')
+
+'''CONTROL PANEL'''
+
+# BODY CONTROL
+mass = np.ones(6, dtype=np.float64)  # Array of masses - either all the same mass, or variable (manual input)
+
+pos = 4 * np.random.rand(len(mass), 2) - 4  # Initial Values for Position and Velocity - Specify, Choose randomly or
+vel = 3 * np.random.rand(len(mass), 2) - 3  # choose a specific configuration below.
+
+# '''Figure-8'''
+# mass = np.ones(3, dtype=np.float64)
+# pos = np.array([[0.9700436,-0.24308753],[-0.9700436,0.24308753],[0,0]],dtype=np.float64)
+# vel = np.array([[0.466203685,0.43236573],[0.466203685,0.43236573],[-2*0.466203685,-2*0.43236573]],dtype=np.float64)
+
+# '''FOUR QUADRANTS'''
+# mass = np.ones(4, dtype=np.float64)
+# pos = np.array([[0, 1], [1, 0], [0, -1], [-1, 0]], dtype=np.float64)
+# vel = np.array([[1, 0], [0, -1], [-1, 0], [0, 1]], dtype=np.float64)
+
+
+# TIMING/PHYSICS CONTROL
+duration = 5  # duration in seconds
+dt = 0.0005  # precision in seconds
+
+use_G = False  # If True, the gravitational force will be true to life (i.e. un-normalised).Timing precision and
+# duration will need to be changed too.
+
+# GRAPHICS CONTROL
+show_lines = True  # Show lines behind bodies
+limit_lines = False  # Lines will not exceed a fixed length
+show_com = True  # Show COM (diagnostic, it should stay in the centre of the frame)
+display_time = True
+figure_scale = 12  # Scaling parameter for figure output.
+visual_dt = 0.005  # Set the precision 'per-frame' in the animation. Higher values mean less animation processing time
+# and faster animations, but too high a value will lead to jagged body motions. For true-to-life representation,
+# set this equal to 'dt'.
+
+
+axes_list = [  # Input desired views of the system here - position/velocity space, desired axis limits, etc.
+    axis_handle(view='position', zoom=0, zoomfocus=0, xlim=[-4, 4], ylim=[-4, 4], title='Position Space',
+                grid='on'),
+    axis_handle(view='velocity', zoom=0, zoomfocus=0, xlim=[-15, 15], ylim=[-15, 15], title='Velocity Space',
+                grid='on'),
+    axis_handle(view='position', zoom=1, zoomfocus=0, xlim=[-4, 4], ylim=[-4, 4], title='Position Space',
+                grid='on'),
+    axis_handle(view='position', zoom=1, zoomfocus=1, xlim=[-4, 4], ylim=[-4, 4], title='Position Space',
+                grid='on'),
+    axis_handle(view='position', zoom=1, zoomfocus=2, xlim=[-4, 4], ylim=[-4, 4], title='Position Space',
+                grid='on'),
+    axis_handle(view='position', zoom=1, zoomfocus=3, xlim=[-4, 4], ylim=[-4, 4], title='Position Space',
+                grid='on')
+]
+
+colour_matrix = ['blue', 'red', 'green', 'magenta']  # Colours for masses and their corresponding lines.
+matplotlib.rc('xtick', labelsize=21)  # Size of tick labels (you shouldn't need to change these).
+matplotlib.rc('ytick', labelsize=21)
+
+# MP4 OUTPUT CONTROL (FFMPEG)
+fps = 60
+bitrate = 1800
+
+'''NBODY CODE'''
+# Figure initialisation
+if len(axes_list) != 1:
+    ncols = 2
+    nrows = math.ceil(len(axes_list) / 2)
+else:
+    ncols = 1
+    nrows = 1
+
+fig, axs = plt.subplots(nrows, ncols, figsize=(ncols * figure_scale, nrows * figure_scale))
+plt.subplots_adjust(wspace=0.05, left=0.05, right=0.975)  # Whitespace reduction in figure output.
+axs = np.array(axs)
+if axs.size == 1:
+    axs = np.append(axs, 0)
+axs = axs.flatten()  # Flatten the axes array for easy indexing (follows the HTML flexbox row-wrap format).
+
+for i, ax in enumerate(axs):
+    if ax == 0:
+        continue
+    hdl = axes_list[i]
+    ax.set_xlim(hdl.xlim)
+    ax.set_ylim(hdl.ylim)
+    ax.grid(hdl.grid)
+    ax.set_title(hdl.title, fontsize=28)
+
+num_cycles = int(duration / dt) - 1
+
+# Colour Management
+if len(colour_matrix) < len(mass):
+    for i in range(int(len(mass) - len(colour_matrix))):
+        colour_matrix.append('blue')
+    print('Colour matrix provided is not large enough - filling with the colour Blue.')
+
+# CENTRE OF MASS FRAME TRANSFORMATION
+rows = []
+for i, row in enumerate(vel):
+    rows.append(row * mass[i])
+rows = np.array(rows)
+vcentre = np.sum(rows, axis=0) / np.sum(mass)  # Determine the velocity of the centre of mass frame
+for obj in vel:
+    obj -= vcentre  # Subtract from the velocity of the objects to transform their velocities to the new frame.
+
+com_coords = []
+for i, elem in enumerate(pos):
+    com_coords.append(mass[i] * elem)
+com_coords = np.sum(com_coords, axis=0) / np.sum(mass)  # Determine coordinates of the centre of mass
+for obj in pos:
+    obj -= com_coords  # Spatial translation of body coordinates to place centre of mass in the centre of the axes.
+
+# We want to do a set number of cycles, so initialise the big arrays now.
+pos = np.concatenate((pos[None, ...], np.zeros((num_cycles, len(mass), 2), dtype=np.float64)), axis=0)
+vel = np.concatenate((vel[None, ...], np.zeros((num_cycles, len(mass), 2), dtype=np.float64)), axis=0)
+
+start_time = time.time()
+
+for cyc_i in range(num_cycles):
+    # Form the state vector of positions and velocities, y.
+    y = []
+    for i, elem in enumerate(pos[cyc_i]):
+        y.append(elem)
+        y.append(vel[cyc_i][i])
+    y = np.array(y)
+
+    # Employ a fourth-order RK numerical integration to the next timestep.
+    k1 = dt * dydt(y, mass, 2, dt)
+    k2 = dt * dydt(y + k1 / 2.0, mass, 2, dt=dt, use_G=use_G)
+    k3 = dt * dydt(y + k2 / 2.0, mass, 2, dt=dt, use_G=use_G)
+    k4 = dt * dydt(y + k3, mass, 2, dt=dt, use_G=use_G)
+    dy = k1 / 6.0 + k2 / 3.0 + k3 / 3.0 + k4 / 6.0
+
+    # Populate new position and velocity vector elements, and add them to the large arrays.
+    newpos = dy[0:len(dy) - 1:2]
+    newvel = dy[1:len(dy):2]
+
+    for i in range(len(newpos)):
+        pos[cyc_i + 1, i] = pos[cyc_i, i] + newpos[i]
+        vel[cyc_i + 1, i] = vel[cyc_i, i] + newvel[i]
+
+    # Estimate completion time for the user.
+    if cyc_i == 50:
+        looptime = (time.time()-start_time) / 51
+        print('Estimated duration: ' + str(looptime * num_cycles) + 's for ' + str(num_cycles) + ' cycles.')
+
+print('Model complete in: ' + str(time.time() - start_time))
+
+# Initialise figures with the initial value configuration, generating artists for animation.
+for i, ax in enumerate(axes_list):
+    if ax.view == 'position':
+        bodies = []
+        for ind, m in enumerate(mass):
+            body, = axs[i].plot([pos[0, ind, 0]], [pos[0, ind, 1]], 'o', color=colour_matrix[ind],
+                                markersize=12 * m, zorder=3)
+            bodies.append(body)
+        ax.bodies = bodies  # Add artists to the axes handler for easy access later.
+        if show_lines:
+            lines = []
+            for ind, m in enumerate(mass):
+                line, = axs[i].plot([pos[0, ind, 0]], [pos[0, ind, 1]], color=colour_matrix[ind],
+                                    zorder=-1, linewidth=3, alpha=0.5)
+                lines.append(line)
+            ax.lines = lines  # Add artists to the axes handler for easy access later.
+
+        if show_com:  # Initialise the centre of mass marker - only makes sense on positional views.
+            com, = axs[i].plot([0], [0], 'r+', markersize=20)
+            ax.com = com
+        if ax.zoom:  # If this view is focused on a particular body (zoomfocus index), centre axes limits around it.
+            axs[i].set_xlim([pos[0, ax.zoomfocus, 0] - 0.5, pos[0, ax.zoomfocus, 0] + 0.5])
+            axs[i].set_ylim([pos[0, ax.zoomfocus, 1] - 0.5, pos[0, ax.zoomfocus, 1] + 0.5])
+
+    elif ax.view == 'velocity':
+        bodies = []
+        for ind, m in enumerate(mass):
+            body, = axs[i].plot([vel[0, ind, 0]], [vel[0, ind, 1]], 'o', color=colour_matrix[ind],
+                                markersize=12 * m, zorder=3)
+            bodies.append(body)
+        ax.bodies = bodies  # Add artists to the axes handler for easy access later.
+        if show_lines:
+            lines = []
+            for ind, m in enumerate(mass):
+                line, = axs[i].plot([vel[0, ind, 0]], [vel[0, ind, 1]], color=colour_matrix[ind],
+                                    zorder=-1, linewidth=3, alpha=0.5)
+                lines.append(line)
+            ax.lines = lines  # Add artists to the axes handler for easy access later.
+        if ax.zoom:  # If this view is focused on a particular body (zoomfocus index), centre axes limits around it.
+            axs[i].set_xlim([vel[0, ax.zoomfocus, 0] - 0.5, vel[0, ax.zoomfocus, 0] + 0.5])
+            axs[i].set_ylim([vel[0, ax.zoomfocus, 1] - 0.5, vel[0, ax.zoomfocus, 1] + 0.5])
+
+if display_time:
+    time_text = plt.text(0.02, 0.89, 'TIME', fontsize=32, transform=axs[0].transAxes)  # Initialise timestamp.
+
+if display_time:  # Initialise simulation time tracking for timestamp if desired.
+    times = []
+    sim_time = 0
+
+prev_percent=0
+
+
+def animate_timedur(k):
+    global pos
+    global vel
+    global prev_percent
+
+    temp = int(k/num_cycles*100)
+    if temp > (prev_percent+4):  # Progress monitoring.
+        print('Animation rendering - {0:.0f}%.'.format(temp))
+        prev_percent=temp
+
+    # Update the data for each artist on each axis sequentially - not much to explain here.
+    for num, ax in enumerate(axes_list):
+        if ax.view == 'position':
+            for ind, body in enumerate(ax.bodies):
+                body.set_data(pos[k, ind, 0], pos[k, ind, 1])
+                if show_lines:
+                    if k <= 100 or not limit_lines:
+                        ax.lines[ind].set_data(pos[:k, ind, 0], pos[:k, ind, 1])
+                    elif k > 100 and limit_lines:  # If limiting the line length, it is performed here.
+                        ax.lines[ind].set_data(pos[k - 100:k, ind, 0], pos[k - 100:k, ind, 1])
+            if show_com:
+                com_coords = []
+                for i, elem in enumerate(pos[k, :, :]):
+                    com_coords.append(mass[i] * elem)
+                com_coords = np.sum(com_coords, axis=0) / np.sum(mass)  # Calculate new centre of mass position.
+                ax.com.set_data(com_coords[0], com_coords[1])
+            if ax.zoom:
+                axs[num].set_xlim([pos[k, ax.zoomfocus, 0] - 0.5, pos[k, ax.zoomfocus, 0] + 0.5])
+                axs[num].set_ylim([pos[k, ax.zoomfocus, 1] - 0.5, pos[k, ax.zoomfocus, 1] + 0.5])
+
+        elif ax.view == 'velocity':
+            for ind, body in enumerate(ax.bodies):
+                body.set_data(vel[k, ind, 0], vel[k, ind, 1])
+                if show_lines:
+                    if k <= 100 or not limit_lines:
+                        ax.lines[ind].set_data(vel[:k, ind, 0], vel[:k, ind, 1])
+                    elif k > 100 and limit_lines:  # If limiting the line length, it is performed here.
+                        ax.lines[ind].set_data(vel[k - 100:k, ind, 0], vel[k - 100:k, ind, 1])
+            if ax.zoom:
+                axs[num].set_xlim([vel[k, ax.zoomfocus, 0] - 0.5, vel[k, ax.zoomfocus, 0] + 0.5])
+                axs[num].set_ylim([vel[k, ax.zoomfocus, 1] - 0.5, vel[k, ax.zoomfocus, 1] + 0.5])
+
+    if display_time:  # If keeping a timestamp, update the text and forward the timestamp here.
+        global sim_time
+        time_text.set_text("Time: {0:.2f}s".format(sim_time))
+        sim_time = sim_time + (0.01 / dt) * dt
+
+
+Writer = animation.writers['ffmpeg']  # Initialise the animation writer with the requested parameters.
+writer = Writer(fps=fps, bitrate=1800, metadata=dict(artist='Code by: Christian Chapman-Bird'))
+
+ani = animation.FuncAnimation(fig, animate_timedur,
+                              frames=range(0, int(duration / dt - 1), int(visual_dt / dt)), interval=15)
+ani.save('./media/completetest.mp4', writer=writer)  # Save the animation.
